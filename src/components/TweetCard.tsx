@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Tweet } from '@/utils/types';
 import { Checkbox } from '@/components/ui/checkbox';
-import { fetchTweetDetails, fetchTweetContinuation } from '@/utils/api';
 import { MessageSquare, Heart, RefreshCw, Share, ChevronDown, ChevronUp, Loader2 } from 'lucide-react';
 import MediaDisplay from './MediaDisplay';
 import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar';
@@ -50,65 +49,26 @@ const TweetCard: React.FC<TweetCardProps> = ({ tweet, isSelected, onSelectToggle
   
   // Preload logic for long tweets - using staggered loading with backoff
   useEffect(() => {
-    // Skip preloading for saved tweets that already have content
+    // Skip if we're still loading or if we already have content
+    if (isLoadingFullTweet || fullTweet) {
+      return;
+    }
+
+    // Skip automatic preloading for saved tweets (they already have full content)
     if (tweet.savedAt) {
       return;
     }
 
-    // Only load if it's a long tweet that isn't already loading
-    if (!isLoadingFullTweet && (tweet.is_long || isTruncated)) {
-      // Apply a random initial delay to stagger loading of tweets
-      // This prevents all tweets from loading at once and hitting rate limits
-      const initialDelay = 1000 + Math.random() * 2000;
-      
-      let loadingTimer = setTimeout(async () => {
-        setIsLoadingFullTweet(true);
-        
-        let retryCount = 0;
-        const maxRetries = 2;
-        const baseDelay = 2500;
-        
-        const attemptFetch = async () => {
-          try {
-            // First try to get the tweet details
-            const details = await fetchTweetDetails(tweet.id, !!tweet.savedAt);
-            
-            if (details && details.full_text) {
-              setFullTweet(details);
-              return true;
+    // If the tweet already has full_text that's significantly longer than the display text, use it
+    if (tweet.full_text && tweet.full_text.length > tweet.text.length + 20) {
+      setFullTweet({
+        ...tweet,
+        full_text: tweet.full_text
+      });
+      return;
             }
             
-            // If getting details failed, try continuation as fallback
-            const continuationDetails = await fetchTweetContinuation(tweet.id, !!tweet.savedAt);
-            
-            if (continuationDetails && continuationDetails.full_text) {
-              setFullTweet(continuationDetails);
-              return true;
-            }
-            
-            return false;
-          } catch (error) {
-            console.error(`Error preloading full tweet content (attempt ${retryCount + 1}):`, error);
-            
-            // Implement retry logic with exponential backoff
-            if (retryCount < maxRetries) {
-              retryCount++;
-              const delay = baseDelay * Math.pow(1.5, retryCount - 1);
-              
-              await new Promise(resolve => setTimeout(resolve, delay));
-              return attemptFetch(); // Recursive retry
-            }
-            
-            return false;
-          }
-        };
-        
-        await attemptFetch();
-        setIsLoadingFullTweet(false);
-      }, initialDelay);
-      
-      return () => clearTimeout(loadingTimer);
-    }
+    // No need for API calls - just use existing data
   }, [tweet, isLoadingFullTweet]);
 
   // Handle click on "Show more" button
@@ -125,46 +85,18 @@ const TweetCard: React.FC<TweetCardProps> = ({ tweet, isSelected, onSelectToggle
       return;
     }
     
-    // Otherwise, we need to fetch the full tweet
-    setIsLoadingFullTweet(true);
-    
-    try {
-      // First try to get the tweet details
-      const details = await fetchTweetDetails(tweet.id, !!tweet.savedAt);
-      
-      if (details && details.full_text) {
-        setFullTweet(details);
+    // If we have full_text available, use it
+    if (tweet.full_text && tweet.full_text.length > tweet.text.length + 5) {
+      setFullTweet({
+        ...tweet,
+        full_text: tweet.full_text
+      });
         setShowFullContent(true);
-        setIsLoadingFullTweet(false);
         return;
       }
       
-      // If getting details failed, try continuation as fallback
-      const continuationDetails = await fetchTweetContinuation(tweet.id, !!tweet.savedAt);
-      
-      if (continuationDetails && continuationDetails.full_text) {
-        setFullTweet(continuationDetails);
+    // If no additional content is available, just show what we have
         setShowFullContent(true);
-        setIsLoadingFullTweet(false);
-        return;
-      }
-      
-      // If both methods failed, show an error
-      toast({
-        title: 'Error',
-        description: 'Unable to load full tweet content. Please try again later.',
-        variant: 'destructive',
-      });
-    } catch (error) {
-      console.error('Error loading full tweet content:', error);
-      toast({
-        title: 'Error',
-        description: 'Failed to load full tweet content. Please try again.',
-        variant: 'destructive',
-      });
-    } finally {
-      setIsLoadingFullTweet(false);
-    }
   };
 
   const handleExpandClick = () => {

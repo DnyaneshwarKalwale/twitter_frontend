@@ -5,7 +5,6 @@ import MediaDisplay from './MediaDisplay';
 import { MessageSquare, Heart, RefreshCw, Share, ChevronDown, ChevronUp, CheckSquare } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar';
-import { fetchTweetDetails, fetchTweetContinuation } from '@/utils/api';
 
 interface TweetThreadProps {
   thread: Thread;
@@ -43,77 +42,20 @@ const TweetThread: React.FC<TweetThreadProps> = ({
     }
     
     // Debug threadID and content
-    console.log(`Thread ${thread.id} has ${thread.tweets.length} tweets, preloading content`);
+    console.log(`Thread ${thread.id} has ${thread.tweets.length} tweets, checking for full content`);
     thread.tweets.forEach(tweet => {
       console.log(`Tweet ${tweet.id} text length: ${tweet.text.length}, full_text length: ${tweet.full_text?.length || 0}`);
-    });
-    
-    const preloadLongTweets = async () => {
-      // Find the first 2 long tweets that aren't already loaded
-      const longTweets = thread.tweets
-        .filter(tweet => (tweet.is_long || isTruncated(tweet)) && !fullTweets.has(tweet.id))
-        .slice(0, 3); // Try to preload more tweets in a thread
       
-      if (longTweets.length === 0) return;
-      
-      console.log(`Found ${longTweets.length} long tweets to preload in thread ${thread.id}`);
-      
-      // Preload these tweets one by one to minimize API load
-      for (const tweet of longTweets) {
-        if (loadingTweets.has(tweet.id)) continue;
-        
-        try {
-          // Mark as loading
-          setLoadingTweets(prev => new Set(prev).add(tweet.id));
-          
-          // Try to get tweet details first
-          let details = await fetchTweetDetails(tweet.id, !!tweet.savedAt);
-          
-          // If that failed, try continuation
-          if (!details) {
-            details = await fetchTweetContinuation(tweet.id, !!tweet.savedAt);
-          }
-          
-          // If we got details, store them
-          if (details) {
-            // Process the text to clean it up
-            if (details.full_text) {
-              details.full_text = details.full_text.replace(/\s*https:\/\/t\.co\/\w+$/g, '');
-              details.full_text = details.full_text.replace(/(\s*[…\.]{3,})$/g, '');
-            }
-            
-            console.log(`Preloaded tweet ${tweet.id} with text length: ${details.full_text?.length || 0}`);
-            setFullTweets(prev => new Map(prev).set(tweet.id, details));
+      // If the tweet already has full_text that's significantly longer than the display text, use it
+      if (tweet.full_text && tweet.full_text.length > tweet.text.length + 20) {
+        setFullTweets(prev => new Map(prev).set(tweet.id, tweet));
             
             // Automatically expand preloaded tweets in threads for better readability
-            if (!expandedTweets.has(tweet.id) && details.full_text && tweet.full_text && 
-                details.full_text.length > tweet.full_text.length + 20) {
+        if (!expandedTweets.has(tweet.id)) {
               setExpandedTweets(prev => new Set(prev).add(tweet.id));
             }
           }
-        } catch (error) {
-          console.log(`Preload failed for tweet ${tweet.id}:`, error);
-          // Non-critical error, we'll just skip preloading this one
-        } finally {
-          // Clear loading state
-          setLoadingTweets(prev => {
-            const newSet = new Set(prev);
-            newSet.delete(tweet.id);
-            return newSet;
-          });
-        }
-        
-        // Add a small delay between preloads to avoid rate limiting
-        await new Promise(resolve => setTimeout(resolve, 2500));
-      }
-    };
-    
-    // Start preloading after a short delay to allow rendering first
-    const timer = setTimeout(() => {
-      preloadLongTweets();
-    }, 1000);
-    
-    return () => clearTimeout(timer);
+    });
   }, [thread.tweets]);
   
   // Always show all tweets in a thread
@@ -198,123 +140,25 @@ const TweetThread: React.FC<TweetThreadProps> = ({
       const originalLength = tweet.full_text?.length || tweet.text.length;
       const fullLength = existingFullTweet.full_text.length;
       
-      // If the full version is significantly longer or we're dealing with a saved tweet, don't fetch again
-      if (fullLength > originalLength + 20 || tweet.savedAt) {
-        console.log(`Using existing full content for tweet ${tweetId}: ${fullLength} vs ${originalLength}`);
-        return;
+      if (fullLength > originalLength + 10) {
+        console.log(`Using existing full tweet for ${tweetId}`);
+        return; // We already have good content
       }
     }
     
-    // Skip API calls for saved tweets
+    // For saved tweets, no need to fetch additional content
     if (tweet.savedAt) {
       return; // No need to fetch additional content for saved tweets
     }
     
-    if ((tweet.is_long || isTruncated(tweet)) && !loadingTweets.has(tweetId)) {
-      // Set loading state for this tweet
-      setLoadingTweets(prev => new Set(prev).add(tweetId));
-      
-      let retryCount = 0;
-      const maxRetries = 2;
-      const baseDelay = 3000;
-      
-      const attemptFetch = async () => {
-        try {
-          // First try direct tweet details as the primary method
-          let details = await fetchTweetDetails(tweetId, !!tweet.savedAt);
-          
-          // Log receipt of tweet details
-          console.log(`Received details for tweet ${tweetId}:`, {
-            hasDetails: !!details,
-            textLength: details?.text?.length || 0,
-            fullTextLength: details?.full_text?.length || 0,
-            originalFullTextLength: tweet.full_text?.length || 0
-          });
-          
-          // If details method failed or returned insufficient data, try continuation
-          if (!details || !details.full_text || (tweet.full_text && details.full_text.length <= tweet.full_text.length)) {
-            try {
-              const continuationDetails = await fetchTweetContinuation(tweetId, !!tweet.savedAt);
-              
-              // Log receipt of continuation details
-              console.log(`Received continuation for tweet ${tweetId}:`, {
-                hasContinuation: !!continuationDetails,
-                continuationTextLength: continuationDetails?.text?.length || 0,
-                continuationFullTextLength: continuationDetails?.full_text?.length || 0
-              });
-              
-              // Only use continuation data if it's better than what we got from details
-              if (continuationDetails && 
-                  continuationDetails.full_text && 
-                  (!details || !details.full_text || continuationDetails.full_text.length > details.full_text.length)) {
-                details = continuationDetails;
-              }
-            } catch (continuationError) {
-              console.error(`Error fetching tweet continuation (attempt ${retryCount + 1}):`, continuationError);
-              // If continuation fails but we have details, still use those
+    // If we have full_text available, use it
+    if (tweet.full_text && tweet.full_text.length > tweet.text.length + 5) {
+      setFullTweets(prev => new Map(prev).set(tweetId, tweet));
+      return;
             }
-          }
-          
-          if (details) {
-            // Process the text to clean it up
-            if (details.full_text) {
-              details.full_text = details.full_text.replace(/\s*https:\/\/t\.co\/\w+$/g, '');
-              details.full_text = details.full_text.replace(/(\s*[…\.]{3,})$/g, '');
-              details.full_text = details.full_text.replace(/\n{3,}/g, '\n\n');
-            }
-            
-            // Compare original and new content lengths
-            const originalLength = tweet.full_text?.length || tweet.text.length;
-            const newLength = details.full_text?.length || 0;
-            console.log(`Tweet ${tweetId} content lengths: original=${originalLength}, new=${newLength}, difference=${newLength - originalLength}`);
-            
-            // Only update if we got significantly more content
-            if (newLength > originalLength + 10) {
-              setFullTweets(prev => new Map(prev).set(tweetId, details));
-              return true; // Success
-            } else {
-              console.log(`New content not significantly longer for tweet ${tweetId}, using original`);
-              return false;
-            }
-          }
-          
-          return false; // Failed to get tweet details
-        } catch (error) {
-          console.error(`Error fetching full tweet (attempt ${retryCount + 1}):`, error);
-          
-          // Retry with exponential backoff
-          if (retryCount < maxRetries) {
-            retryCount++;
-            const delay = baseDelay * Math.pow(1.5, retryCount - 1);
-            console.log(`Will retry fetching tweet ${tweetId} in ${delay}ms (attempt ${retryCount + 1}/${maxRetries + 1})`);
-            
-            await new Promise(resolve => setTimeout(resolve, delay));
-            return attemptFetch(); // Recursive retry
-          }
-          
-          return false; // Max retries reached
-        }
-      };
-      
-      try {
-        await attemptFetch();
-      } catch (finalError) {
-        console.error('All attempts to fetch tweet failed:', finalError);
-        // Log more detailed information for debugging
-        console.error('Error details:', {
-          tweetId,
-          hasFullTweet: fullTweets.has(tweetId),
-          isTruncated: tweet ? isTruncated(tweet) : 'Tweet not found'
-        });
-      } finally {
-        // Always clear the loading state
-        setLoadingTweets(prev => {
-          const newSet = new Set(prev);
-          newSet.delete(tweetId);
-          return newSet;
-        });
-      }
-    }
+    
+    // If no additional content is available, just show what we have
+    console.log(`No additional content available for tweet ${tweetId}`);
   };
   
   // Get the displayed text for a tweet

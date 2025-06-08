@@ -7,6 +7,7 @@ export default defineConfig(({ mode }) => ({
   server: {
     host: "::",
     port: 8080,
+    allowedHosts: ['app.brandout.ai'],
     // Enable history fallback for SPA routing
     historyApiFallback: true,
   },
